@@ -144,6 +144,49 @@
 	*c = 0;							\
     } STMT_END
 
+/* These emulate native many-reader/1-writer locks.
+ * Basically a locking reader just locks the semaphore long enough to increment
+ * a counter; and similarly decrements it when when through.  Any writer will
+ * run only when the count of readers is 0.  That is because it blocks on that
+ * semaphore (doing a COND_WAIT) until it gets control of it, which won't
+ * happen unless the count becomes 0.  ALL readers and other writers are then
+ * blocked until it releases the semaphore.  The reader whose unlocking causes
+ * the count to become 0 signals any waiting writers, and the system guarantees
+ * that only one gets control at a time */
+
+#  define PERL_READ_LOCK(mutex, counter)                            \
+    STMT_START {                                                    \
+        MUTEX_LOCK(&mutex);                                         \
+        counter++;                                                  \
+        MUTEX_UNLOCK(&mutex);                                       \
+    } STMT_END
+
+#  define PERL_READ_UNLOCK(mutex, counter, no_readers_condition)    \
+    STMT_START {                                                    \
+        MUTEX_LOCK(&mutex);                                         \
+        counter--;                                                  \
+        if (counter <= 0) {                                         \
+            COND_SIGNAL(&no_readers_condition);                     \
+            counter = 0;                                            \
+        }                                                           \
+        MUTEX_UNLOCK(&mutex);                                       \
+    } STMT_END
+
+#  define PERL_WRITE_LOCK(mutex, counter, no_readers_condition)     \
+    STMT_START {                                                    \
+        MUTEX_LOCK(&mutex);                                         \
+        do {                                                        \
+            if (counter == 0)                                       \
+                break;                                              \
+            COND_WAIT(&no_readers_condition, &mutex);               \
+        }                                                           \
+        while (1);                                                  \
+                                                                    \
+        /* Here, the mutex is locked, with no readers */            \
+    } STMT_END
+
+#  define PERL_WRITE_UNLOCK(mutex)  MUTEX_UNLOCK(&mutex)
+
 #define THREAD_RET_TYPE		any_t
 
 #define DETACH(t)		cthread_detach(t->self)
